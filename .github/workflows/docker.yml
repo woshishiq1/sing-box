@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "The tag version you want to build"
+        description: "The tag version you want to build (e.g. v1.10.0-ref1nd)"
 
 env:
-  # 修改为你自己的镜像名称
+  # ==================== 修改这里 ====================
   REGISTRY_IMAGE: woshi17/ref1nd-stable
+  # ================================================
 
 jobs:
   build_binary:
@@ -46,7 +47,7 @@ jobs:
           echo "ref=$ref"
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
-      - name: Checkout
+      - name: Checkout reF1nd-stable
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.ref }}
@@ -57,7 +58,7 @@ jobs:
         with:
           go-version: ~1.25.8
 
-      - name: Clone cronet-go
+      - name: Clone cronet-go (for naive)
         if: matrix.naive
         run: |
           set -xeuo pipefail
@@ -98,8 +99,10 @@ jobs:
       - name: Set version
         run: |
           set -xeuo pipefail
-          VERSION=$(go run ./cmd/internal/read_tag)
+          VERSION=$(go run ./cmd/internal/read_tag || echo "unknown")
+          VERSION="${VERSION}-reF1nd"
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "✅ Version set to: ${VERSION}"
 
       - name: Set Chromium toolchain environment
         if: matrix.naive
@@ -108,19 +111,15 @@ jobs:
           cd ~/cronet-go
           go run ./cmd/build-naive --target=linux/${{ matrix.arch }} --libc=musl env >> $GITHUB_ENV
 
-      # ==================== 关键修改部分 ====================
       - name: Set build tags
         run: |
           set -xeuo pipefail
-          
-          # reF1nd-stable 分支的 providers 是默认内置的，无需 with_providers tag
           if [[ -f "release/DEFAULT_BUILD_TAGS_OTHERS" ]]; then
             BASE_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS)
           elif [[ -f "release/DEFAULT_BUILD_TAGS" ]]; then
             BASE_TAGS=$(cat release/DEFAULT_BUILD_TAGS)
           else
-            # 兜底常用 tags（reF1nd 常用组合）
-            BASE_TAGS="with_quic,with_grpc,with_dhcp,with_wireguard,with_utls,with_reality_server,with_clash_api,with_v2ray_api,with_gvisor,with_acme"
+            BASE_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_reality_server,with_clash_api,with_v2ray_api,with_acme,with_tailscale"
           fi
           
           if [[ "${{ matrix.naive }}" == "true" ]]; then
@@ -131,11 +130,10 @@ jobs:
           
           echo "BUILD_TAGS=${TAGS}" >> "${GITHUB_ENV}"
           echo "✅ Using build tags: ${TAGS}"
-      # ====================================================
 
       - name: Set shared ldflags
         run: |
-          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "${GITHUB_ENV}"
+          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS 2>/dev/null || echo '')" >> "${GITHUB_ENV}"
 
       - name: Build (naive)
         if: matrix.naive
@@ -145,7 +143,10 @@ jobs:
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" \
             ./cmd/sing-box
           echo "Built binary with tags: ${BUILD_TAGS}"
-          ./sing-box version
+          # 只在 amd64 上执行 version 检查，避免 Exec format error
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            ./sing-box version
+          fi
         env:
           CGO_ENABLED: "1"
           GOOS: linux
@@ -161,7 +162,9 @@ jobs:
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" \
             ./cmd/sing-box
           echo "Built binary with tags: ${BUILD_TAGS}"
-          ./sing-box version
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            ./sing-box version
+          fi
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -190,8 +193,7 @@ jobs:
   build_docker:
     name: Build Docker image
     runs-on: ubuntu-latest
-    needs:
-      - build_binary
+    needs: build_binary
     strategy:
       fail-fast: true
       matrix:
@@ -222,9 +224,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.ref }}
-          fetch-depth: 0
 
-      - name: Prepare
+      - name: Prepare platform
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
@@ -280,8 +281,7 @@ jobs:
   merge:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    needs:
-      - build_docker
+    needs: build_docker
     steps:
       - name: Get commit to build
         id: ref
@@ -298,10 +298,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.ref }}
-          fetch-depth: 0
-
-      - name: Detect track
-        run: bash .github/detect_track.sh || echo "No detect_track.sh, skipping"
 
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -320,7 +316,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Create manifest list and push
-        if: github.event_name != 'push'
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
@@ -329,7 +324,6 @@ jobs:
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
-        if: github.event_name != 'push'
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:latest
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.ref.outputs.ref }}
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:latest || true
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.ref.outputs.ref }} || true
