@@ -7,53 +7,46 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "要构建的分支名（直接填 stable 即可）"
+        description: "要构建的分支名（推荐填 stable）"
         required: false
         default: "stable"
         type: string
 
 env:
-  # ==================== 修改成你自己的 Docker Hub 镜像名 ====================
-  REGISTRY_IMAGE: woshi17/ref1nd-stable     # ← 请确认这个用户名是你 Docker Hub 的
-  # =====================================================================
+  # ==================== 你的 Docker Hub 镜像名 ====================
+  REGISTRY_IMAGE: woshi17/ref1nd-stable
+  # ============================================================
 
 jobs:
   build_binary:
     name: Build binary
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
+          # 只保留常用平台（amd64 + arm64 + arm/v7）
           - { arch: amd64, naive: true, docker_platform: "linux/amd64" }
           - { arch: arm64, naive: true, docker_platform: "linux/arm64" }
-          - { arch: "386", naive: true, docker_platform: "linux/386" }
           - { arch: arm, goarm: "7", naive: true, docker_platform: "linux/arm/v7" }
-          - { arch: mipsle, gomips: softfloat, naive: true, docker_platform: "linux/mipsle" }
-          - { arch: riscv64, naive: true, docker_platform: "linux/riscv64" }
-          - { arch: loong64, naive: true, docker_platform: "linux/loong64" }
-          - { arch: arm, goarm: "6", docker_platform: "linux/arm/v6" }
-          - { arch: ppc64le, docker_platform: "linux/ppc64le" }
-          - { arch: s390x, docker_platform: "linux/s390x" }
 
     steps:
       - name: Get ref to build
         id: ref
         run: |-
           if [[ -z "${{ github.event.inputs.ref }}" ]]; then
-            REF_TO_BUILD="${{ github.ref_name }}"
+            ref="${{ github.ref_name }}"
           else
-            REF_TO_BUILD="${{ github.event.inputs.ref }}"
+            ref="${{ github.event.inputs.ref }}"
           fi
-          echo "ref=$REF_TO_BUILD"
-          echo "ref=$REF_TO_BUILD" >> $GITHUB_OUTPUT
-          echo "✅ Building from branch/tag: $REF_TO_BUILD"
+          echo "ref=$ref"
+          echo "ref=$ref" >> $GITHUB_OUTPUT
 
       - name: Checkout your repository (stable branch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
-          repository: woshishiq1/sing-box        # 使用你的仓库
-          ref: ${{ steps.ref.outputs.ref }}      # 支持 stable 或其他分支
+          repository: woshishiq1/sing-box   # 使用你的仓库
+          ref: ${{ steps.ref.outputs.ref }}
           fetch-depth: 0
 
       - name: Setup Go
@@ -103,9 +96,8 @@ jobs:
         run: |
           set -xeuo pipefail
           VERSION=$(go run ./cmd/internal/read_tag || echo "unknown")
-          VERSION="${VERSION}-reF1nd"
+          VERSION="${VERSION}-reF1nd"     # 加上 reF1nd 标识
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
-          echo "✅ Version set to: ${VERSION}"
 
       - name: Set Chromium toolchain environment
         if: matrix.naive
@@ -117,18 +109,12 @@ jobs:
       - name: Set build tags
         run: |
           set -xeuo pipefail
-          if [[ -f "release/DEFAULT_BUILD_TAGS_OTHERS" ]]; then
-            BASE_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS)
-          else
-            BASE_TAGS=$(cat release/DEFAULT_BUILD_TAGS)
-          fi
           if [[ "${{ matrix.naive }}" == "true" ]]; then
-            TAGS="${BASE_TAGS},with_musl"
+            TAGS="$(cat release/DEFAULT_BUILD_TAGS),with_musl"
           else
-            TAGS="${BASE_TAGS}"
+            TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS)
           fi
           echo "BUILD_TAGS=${TAGS}" >> "${GITHUB_ENV}"
-          echo "✅ Using build tags: ${TAGS}"
 
       - name: Set shared ldflags
         run: |
@@ -141,7 +127,6 @@ jobs:
           go build -v -trimpath -o sing-box -tags "${BUILD_TAGS}" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" \
             ./cmd/sing-box
-          echo "✅ Built naive binary for ${{ matrix.arch }}"
         env:
           CGO_ENABLED: "1"
           GOOS: linux
@@ -156,10 +141,6 @@ jobs:
           go build -v -trimpath -o sing-box -tags "${BUILD_TAGS}" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" \
             ./cmd/sing-box
-          echo "Built binary with tags: ${BUILD_TAGS}"
-          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
-            ./sing-box version
-          fi
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -195,17 +176,11 @@ jobs:
       matrix:
         include:
           - { platform: "linux/amd64" }
-          - { platform: "linux/arm/v6" }
-          - { platform: "linux/arm/v7" }
           - { platform: "linux/arm64" }
-          - { platform: "linux/386" }
-          - { platform: "linux/ppc64le" }
-          - { platform: "linux/riscv64" }
-          - { platform: "linux/s390x" }
-          - { platform: "linux/loong64", base_image: "ghcr.io/loong64/alpine:edge" }
+          - { platform: "linux/arm/v7" }
 
     steps:
-      - name: Get ref to build
+      - name: Get commit to build
         id: ref
         run: |-
           if [[ -z "${{ github.event.inputs.ref }}" ]]; then
@@ -217,10 +192,11 @@ jobs:
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           repository: woshishiq1/sing-box
           ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
 
       - name: Prepare
         run: |
@@ -228,7 +204,7 @@ jobs:
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
       - name: Download binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: binary-${{ env.PLATFORM_PAIR }}
           path: .
@@ -258,7 +234,7 @@ jobs:
           context: .
           file: Dockerfile.binary
           build-args: |
-            BASE_IMAGE=${{ matrix.base_image || 'alpine' }}
+            BASE_IMAGE=alpine
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -281,7 +257,7 @@ jobs:
     needs:
       - build_docker
     steps:
-      - name: Get ref to build
+      - name: Get commit to build
         id: ref
         run: |-
           if [[ -z "${{ github.event.inputs.ref }}" ]]; then
@@ -293,13 +269,13 @@ jobs:
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           repository: woshishiq1/sing-box
           ref: ${{ steps.ref.outputs.ref }}
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: /tmp/digests
           pattern: digests-*
