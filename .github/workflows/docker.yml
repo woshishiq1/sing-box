@@ -1,22 +1,18 @@
 name: Publish Docker Images to Docker Hub (reF1nd-stable)
 
 on:
-  push:
-    branches:
-      - stable
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       ref:
-        description: "要构建的分支名（推荐填 stable）"
+        description: "要构建的分支名或标签名（同步脚本会自动传入）"
         required: false
         default: "stable"
         type: string
-  # 监听同步脚本发出的自定义信号
-  repository_dispatch:
-    types: [sync_success]
+      custom_tag:
+        description: "自定义 Docker 数字版本号（由同步脚本自动传入）"
+        required: false
+        default: ""
+        type: string
 
 env:
   REGISTRY_IMAGE: woshi17/ref1nd-stable
@@ -37,12 +33,11 @@ jobs:
       - name: Get ref to build
         id: ref
         run: |-
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            ref="stable"
-          elif [[ -n "${{ github.event.inputs.ref }}" ]]; then
+          set -xeuo pipefail
+          if [[ -n "${{ github.event.inputs.ref }}" ]]; then
             ref="${{ github.event.inputs.ref }}"
           else
-            ref="${{ github.ref_name }}"
+            ref="stable"
           fi
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
@@ -100,8 +95,12 @@ jobs:
       - name: Set version
         run: |
           set -xeuo pipefail
-          VERSION=$(go run ./cmd/internal/read_tag || echo "unknown")
-          VERSION="${VERSION}-reF1nd"
+          if [[ -n "${{ github.event.inputs.custom_tag }}" ]]; then
+            VERSION="${{ github.event.inputs.custom_tag }}-reF1nd"
+          else
+            READ_VERSION=$(go run ./cmd/internal/read_tag || echo "unknown")
+            VERSION="${READ_VERSION}-reF1nd"
+          fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
 
       - name: Set Chromium toolchain environment
@@ -186,12 +185,11 @@ jobs:
       - name: Get ref to build
         id: ref
         run: |-
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            ref="stable"
-          elif [[ -n "${{ github.event.inputs.ref }}" ]]; then
+          set -xeuo pipefail
+          if [[ -n "${{ github.event.inputs.ref }}" ]]; then
             ref="${{ github.event.inputs.ref }}"
           else
-            ref="${{ github.ref_name }}"
+            ref="stable"
           fi
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
@@ -261,12 +259,11 @@ jobs:
       - name: Get ref to build
         id: ref
         run: |-
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            ref="stable"
-          elif [[ -n "${{ github.event.inputs.ref }}" ]]; then
+          set -xeuo pipefail
+          if [[ -n "${{ github.event.inputs.ref }}" ]]; then
             ref="${{ github.event.inputs.ref }}"
           else
-            ref="${{ github.ref_name }}"
+            ref="stable"
           fi
           echo "ref=$ref" >> $GITHUB_OUTPUT
 
@@ -292,13 +289,22 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 🎯 清爽版：只保留 latest 和类似 v1.13.12-reF1nd 这种规范的完整标签
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            -t "${{ env.REGISTRY_IMAGE }}:latest" \
-            -t "${{ env.REGISTRY_IMAGE }}:${{ steps.ref.outputs.ref }}" \
-            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+          set -xeuo pipefail
+          
+          # 默认只打 latest 标签
+          TAG_ARGS=("-t" "${{ env.REGISTRY_IMAGE }}:latest")
+          
+          # 如果同步脚本传入了自定义数字版本号，则拼装出 vX.Y.Z-reF1nd 格式的标签
+          if [[ -n "${{ github.event.inputs.custom_tag }}" ]]; then
+            TAG_ARGS+=("-t" "${{ env.REGISTRY_IMAGE }}:v${{ github.event.inputs.custom_tag }}-reF1nd")
+          fi
+          
+          # 执行推送
+          docker buildx imagetools create "${TAG_ARGS[@]}" $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
