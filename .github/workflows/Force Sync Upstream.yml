@@ -23,40 +23,39 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # ======= 核心修改：按时间排序，只检测上游“最新发布”的那一个标签 =======
+      # ======= 修复：精准联网检查 origin 仓库是否真的存在该 Tag =======
       - name: Detect Upstream Latest Tag and Tag Myself
         id: tag_logic
         run: |
           set -xeuo pipefail
           
-          # 1. 添加上游并拉取最新的标签历史
+          # 1. 添加上游并拉取最新的标签历史到本地上下文
           git remote add upstream https://github.com/reF1nd/sing-box.git
           git fetch upstream --tags
 
           NEW_TAG_FOUND=false
           LAST_TAG=""
           
-          # 2. 🎯 核心优化：
-          # --sort=-creatordate 强制让标签按照发布时间倒序排列（最新的在最上面）
-          # head -n 1 极其冷酷地只切出最新的一条标签进行比对，彻底无视所有陈年历史
+          # 2. 按时间排序，找出上游最新的正式版 Tag
           LATEST_UPSTREAM_TAG=$(git tag -l --sort=-creatordate | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd$" | head -n 1 || true)
 
           if [ -n "$LATEST_UPSTREAM_TAG" ]; then
             echo "当前上游最新的稳定标签是: $LATEST_UPSTREAM_TAG"
             
-            # 3. 检查你自己的本地或 origin 仓库里是否已经有这个最新的标签
-            if ! git rev-parse "refs/tags/$LATEST_UPSTREAM_TAG" >/dev/null 2>&1; then
-              echo "💡 确认该标签为全新版本！准备将 $LATEST_UPSTREAM_TAG 绑定到你本地最新的 stable 分支..."
+            # 3. 🎯 核心修复：直接联网向你自己的远程仓库（origin）查询有没有这个 Tag
+            # 如果 origin 仓库没有这个标签，git ls-remote 会返回非 0 状态码，从而进入 else 或者是 ! 匹配
+            if git ls-remote --exit-code --tags origin "$LATEST_UPSTREAM_TAG" >/dev/null 2>&1; then
+              echo "远程 origin 仓库已存在该最新标签，无需重复打标。"
+            else
+              echo "💡 确认该标签在你远程 origin 仓库中不存在！准备开始打标..."
               
-              # 在你当前的 stable 分支头上打上这个同名标签
+              # 在当前 stable 分支头上打上同名标签
               git tag "$LATEST_UPSTREAM_TAG" HEAD
-              # 推送到你自己的 GitHub 仓库
+              # 推送到你自己的 GitHub 远程仓库
               git push origin "$LATEST_UPSTREAM_TAG"
               
               NEW_TAG_FOUND=true
               LAST_TAG="$LATEST_UPSTREAM_TAG"
-            else
-              echo "本地已存在该最新标签，无需重复打标。"
             fi
           else
             echo "未在上游找到符合规范的稳定标签。"
@@ -73,7 +72,7 @@ jobs:
             echo "TAG_UPDATED=false" >> $GITHUB_OUTPUT
           fi
 
-      # ======= 触发打包脚本（只有抓到最新 Tag 且本地没有时才执行） =======
+      # ======= 触发打包脚本 =======
       - name: Trigger Build via Workflow Dispatch
         if: steps.tag_logic.outputs.TAG_UPDATED == 'true'
         uses: actions/github-script@v7
@@ -82,7 +81,7 @@ jobs:
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'docker.yml', // ⚠️请务必确认这里和你 Docker 打包脚本的文件名完全一致
+              workflow_id: 'docker.yml', 
               ref: '${{ steps.tag_logic.outputs.TAG_REF }}', 
               inputs: {
                 custom_tag: '${{ steps.tag_logic.outputs.VERSION_NUMBER }}' 
