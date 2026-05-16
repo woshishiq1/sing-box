@@ -23,13 +23,13 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # ======= 修复：精准联网检查 origin 仓库是否真的存在该 Tag =======
+      # ======= 修复版：强行覆盖本地缓存打标 =======
       - name: Detect Upstream Latest Tag and Tag Myself
         id: tag_logic
         run: |
           set -xeuo pipefail
           
-          # 1. 添加上游并拉取最新的标签历史到本地上下文
+          # 1. 添加上游并拉取最新的标签历史
           git remote add upstream https://github.com/reF1nd/sing-box.git
           git fetch upstream --tags
 
@@ -42,15 +42,15 @@ jobs:
           if [ -n "$LATEST_UPSTREAM_TAG" ]; then
             echo "当前上游最新的稳定标签是: $LATEST_UPSTREAM_TAG"
             
-            # 3. 🎯 核心修复：直接联网向你自己的远程仓库（origin）查询有没有这个 Tag
-            # 如果 origin 仓库没有这个标签，git ls-remote 会返回非 0 状态码，从而进入 else 或者是 ! 匹配
+            # 3. 联网向你自己的远程仓库（origin）查询有没有这个 Tag
             if git ls-remote --exit-code --tags origin "$LATEST_UPSTREAM_TAG" >/dev/null 2>&1; then
               echo "远程 origin 仓库已存在该最新标签，无需重复打标。"
             else
               echo "💡 确认该标签在你远程 origin 仓库中不存在！准备开始打标..."
               
-              # 在当前 stable 分支头上打上同名标签
-              git tag "$LATEST_UPSTREAM_TAG" HEAD
+              # 🎯 核心修复：使用 -f 强制覆盖本地从上游 fetch 进来的同名标签
+              git tag -f "$LATEST_UPSTREAM_TAG" HEAD
+              
               # 推送到你自己的 GitHub 远程仓库
               git push origin "$LATEST_UPSTREAM_TAG"
               
