@@ -1,8 +1,9 @@
-name: Force Sync Upstream (Exclude .github)
+name: Force Sync Upstream (Branch & Tags - Build on Tag Only)
 
 on:
   schedule:
     # 每天北京时间凌晨 4 点执行 (UTC 20:00)
+    # 💡 提示：因为你现在指望它抓 Tag，如果你希望上游发版后更快响应，可以考虑改成每 3 小时执行一次： '0 */3 * * *'
     - cron: '0 20 * * *'
   workflow_dispatch: # 支持手动点击运行
 
@@ -23,13 +24,75 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+      # ======= 核心新增步骤：优先检测上游 Tag 并用自己的 stable 强行打标 =======
+      - name: Detect Upstream Tag and Tag Myself
+        id: tag_logic
+        run: |
+          set -xeuo pipefail
+          
+          # 1. 先添加上游并把上游所有的标签拉下来
+          git remote add upstream https://github.com/reF1nd/sing-box.git
+          git fetch upstream --tags
+
+          NEW_TAG_FOUND=false
+          LAST_TAG=""
+          
+          # 2. 遍历上游标签：
+          # [0-9]+\.[0-9]+\.[0-9]+ 确保中间必须是纯数字结构（如 1.13.12）
+          # 完美避开包含 alpha, beta, rc 等字母的测试版
+          for tag in $(git tag -l | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd$"); do
+            # 如果你自己的本地仓库（origin）里还没有这个标签
+            if ! git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "💡 侦测到上游发布了全新的稳定版本号: $tag"
+              echo "🎯 准备将该标签直接打在你当前的 stable 分支最新提交上..."
+              
+              # 在你当前的 stable 分支头上打上这个同名标签
+              git tag "$tag" HEAD
+              # 推送到你自己的 GitHub 仓库
+              git push origin "$tag"
+              
+              NEW_TAG_FOUND=true
+              LAST_TAG="$tag"
+              break # 每次只处理最新的一条，防止多发
+            fi
+          done
+          
+          if [ "$NEW_TAG_FOUND" = true ]; then
+            # 提取纯数字版本号（例如从 v1.13.12-reF1nd 中提取出 1.13.12）
+            CLEAN_VERSION=$(echo "$LAST_TAG" | sed 's/^v//' | sed 's/-reF1nd$//')
+            echo "TAG_UPDATED=true" >> $GITHUB_OUTPUT
+            echo "VERSION_NUMBER=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+            echo "TAG_REF=${LAST_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "没有发现符合条件的新版本号。"
+            echo "TAG_UPDATED=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ======= 触发打包脚本（只有抓到新 Tag 时才执行） =======
+      - name: Trigger Build via Workflow Dispatch
+        if: steps.tag_logic.outputs.TAG_UPDATED == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker.yml', // ⚠️请务必确认这里和你 Docker 打包脚本的文件名完全一致
+              ref: '${{ steps.tag_logic.outputs.TAG_REF }}', // 此时这个 Tag 100% 指向你自己的 stable 代码
+              inputs: {
+                custom_tag: '${{ steps.tag_logic.outputs.VERSION_NUMBER }}' // 传入纯数字版本号（如 1.13.12）
+              }
+            })
+            console.log("成功触发 Docker 编译打包流程！");
+
+      # ======= 原有逻辑：强制同步分支代码 =======
       - name: Force Sync logic
         run: |
-          # 1. 添加上游并获取最新代码
-          git remote add upstream https://github.com/reF1nd/sing-box.git
+          set -xeuo pipefail
+          # 获取最新分支代码
           git fetch upstream reF1nd-stable
 
-          # 2. 预检：对比差异
+          # 1. 预检：对比差异
           if git diff --quiet HEAD upstream/reF1nd-stable -- . ':(exclude).github'; then
             echo "检测结果：代码已与上游一致。跳过更新。"
             exit 0
@@ -37,35 +100,32 @@ jobs:
 
           echo "检测到上游有新代码，准备同步..."
 
-          # 3. 备份本地 .github
+          # 2. 备份本地 .github
           mkdir -p /tmp/backup_config
           if [ -d ".github" ]; then
             cp -r .github/* /tmp/backup_config/
           fi
 
-          # 4. 强制重置
+          # 3. 强制重置
           git reset --hard upstream/reF1nd-stable
 
-          # 5. 还原 .github
+          # 4. 还原 .github
           rm -rf .github
           mkdir -p .github
           if [ "$(ls -A /tmp/backup_config/)" ]; then
             cp -r /tmp/backup_config/* .github/
           fi
 
-          # 6. 提交并强制推送
+          # 5. 提交并强制推送
           git add .
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: 强制同步上游代码并保留本地 .github 配置"
             git push origin stable --force
             echo "同步完成并已推送。"
-
-            # ======= 发送触发信号给 Docker 构建脚本 =======
-            curl -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -d '{"event_type": "sync_success"}'
-            echo "已发出构建信号。"
+            
+            # 💡 注意：这里原本用于触发旧构建的 curl 信号已经被我删掉了
+            # 因为我们现在已经改成了“只有上游发布符合条件的 Tag 时才触发打包”
+            echo "分支已更新，根据策略，日常小更新不触发 Docker 打包。"
           else
             echo "无实际文件变更，无需推送。"
           fi
