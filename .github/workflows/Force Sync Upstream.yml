@@ -1,0 +1,71 @@
+name: Force Sync Upstream (Exclude .github)
+
+on:
+  schedule:
+    # 每天北京时间凌晨 4 点执行 (UTC 20:00)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # 支持手动点击运行
+
+jobs:
+  force-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: stable
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Force Sync logic
+        run: |
+          # 1. 添加上游并获取最新代码
+          git remote add upstream https://github.com/reF1nd/sing-box.git
+          git fetch upstream reF1nd-stable
+
+          # 2. 预检：对比差异
+          if git diff --quiet HEAD upstream/reF1nd-stable -- . ':(exclude).github'; then
+            echo "检测结果：代码已与上游一致。跳过更新。"
+            exit 0
+          fi
+
+          echo "检测到上游有新代码，准备同步..."
+
+          # 3. 备份本地 .github
+          mkdir -p /tmp/backup_config
+          if [ -d ".github" ]; then
+            cp -r .github/* /tmp/backup_config/
+          fi
+
+          # 4. 强制重置
+          git reset --hard upstream/reF1nd-stable
+
+          # 5. 还原 .github
+          rm -rf .github
+          mkdir -p .github
+          if [ "$(ls -A /tmp/backup_config/)" ]; then
+            cp -r /tmp/backup_config/* .github/
+          fi
+
+          # 6. 提交并强制推送
+          git add .
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "chore: 强制同步上游代码并保留本地 .github 配置"
+            git push origin stable --force
+            echo "同步完成并已推送。"
+
+            # ======= 发送触发信号给 Docker 构建脚本 =======
+            curl -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -d '{"event_type": "sync_success"}'
+            echo "已发出构建信号。"
+          else
+            echo "无实际文件变更，无需推送。"
+          fi
