@@ -30,7 +30,8 @@ jobs:
           set -xeuo pipefail
           
           git remote add upstream https://github.com/reF1nd/sing-box.git
-          git fetch upstream --tags
+          # 💡 核心修改：添加 --force 参数允许覆盖本地冲突的标签
+          git fetch upstream --tags --force
 
           NEW_TAG_FOUND=false
           LAST_TAG=""
