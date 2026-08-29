@@ -1,0 +1,119 @@
+name: Force Sync Upstream (Branch & Tags - Build on Latest Tag Only)
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+jobs:
+  force-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write  # 🎯 核心修复：赋予触发其他工作流的权限
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: stable
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      # ======= 强行覆盖本地缓存打标 =======
+      - name: Detect Upstream Latest Tag and Tag Myself
+        id: tag_logic
+        run: |
+          set -xeuo pipefail
+          
+          git remote add upstream https://github.com/reF1nd/sing-box.git
+          # 💡 核心修改：添加 --force 参数允许覆盖本地冲突的标签
+          git fetch upstream --tags --force
+
+          NEW_TAG_FOUND=false
+          LAST_TAG=""
+          
+          LATEST_UPSTREAM_TAG=$(git tag -l --sort=-creatordate | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd$" | head -n 1 || true)
+
+          if [ -n "$LATEST_UPSTREAM_TAG" ]; then
+            echo "当前上游最新的稳定标签是: $LATEST_UPSTREAM_TAG"
+            
+            if git ls-remote --exit-code --tags origin "$LATEST_UPSTREAM_TAG" >/dev/null 2>&1; then
+              echo "远程 origin 仓库已存在该最新标签，无需重复打标。"
+            else
+              echo "💡 确认该标签在你远程 origin 仓库中不存在！准备开始打标..."
+              git tag -f "$LATEST_UPSTREAM_TAG" HEAD
+              git push origin "$LATEST_UPSTREAM_TAG"
+              
+              NEW_TAG_FOUND=true
+              LAST_TAG="$LATEST_UPSTREAM_TAG"
+            fi
+          else
+            echo "未在上游找到符合规范的稳定标签。"
+          fi
+          
+          if [ "$NEW_TAG_FOUND" = true ]; then
+            CLEAN_VERSION=$(echo "$LAST_TAG" | sed 's/^v//' | sed 's/-reF1nd$//')
+            echo "TAG_UPDATED=true" >> $GITHUB_OUTPUT
+            echo "VERSION_NUMBER=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+            echo "TAG_REF=${LAST_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "没有触发新版本打包。"
+            echo "TAG_UPDATED=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ======= 触发打包脚本 =======
+      - name: Trigger Build via Workflow Dispatch
+        if: steps.tag_logic.outputs.TAG_UPDATED == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker.yml', 
+              ref: '${{ steps.tag_logic.outputs.TAG_REF }}', 
+              inputs: {
+                custom_tag: '${{ steps.tag_logic.outputs.VERSION_NUMBER }}' 
+              }
+            })
+            console.log("成功触发 Docker 编译打包流程！");
+
+      # ======= 原有逻辑：强制同步分支代码 =======
+      - name: Force Sync logic
+        run: |
+          set -xeuo pipefail
+          git fetch upstream reF1nd-stable
+
+          if git diff --quiet HEAD upstream/reF1nd-stable -- . ':(exclude).github'; then
+            echo "检测结果：代码已与上游一致。跳过更新。"
+            exit 0
+          fi
+
+          echo "检测到上游有新代码，准备同步..."
+
+          mkdir -p /tmp/backup_config
+          if [ -d ".github" ]; then
+            cp -r .github/* /tmp/backup_config/
+          fi
+
+          git reset --hard upstream/reF1nd-stable
+
+          rm -rf .github
+          mkdir -p .github
+          if [ "$(ls -A /tmp/backup_config/)" ]; then
+            cp -r /tmp/backup_config/* .github/
+          fi
+
+          git add .
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "chore: 强制同步上游代码并保留本地 .github 配置"
+            git push origin stable --force
+            echo "同步完成并已推送。"
+            echo "分支已更新，根据策略，日常小更新不触发 Docker 打包。"
+          else
+            echo "无实际文件变更，无需推送。"
+          fi
