@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write  # 赋予触发 Docker 工作流的权限
+      actions: write    # 允许触发 Docker 打包工作流
+      workflows: write  # 🎯 关键修复：允许推送/更新包含 .github/workflows/ 变更的 Tag 和 Commit
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,7 +38,7 @@ jobs:
           
           STABLE_COMMIT=$(git rev-parse upstream/reF1nd-stable)
           
-          # 🎯 关键修复：正则支持 -reF1nd 以及 -reF1nd.1、-reF1nd.2 等后缀
+          # 正则支持 -reF1nd 以及 -reF1nd.1、-reF1nd.2 等后缀
           LATEST_UPSTREAM_TAG=$(git tag -l --sort=-v:refname --merged "$STABLE_COMMIT" | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd(\.[0-9]+)?$" | head -n 1 || true)
 
           if [ -n "$LATEST_UPSTREAM_TAG" ]; then
@@ -48,7 +49,7 @@ jobs:
             else
               echo "💡 确认该标签在你远程 origin 仓库中不存在！准备开始打标..."
               
-              # 获取上游该 Tag 对应的精确 Commit
+              # 获取上游该 Tag 对应的精确 Commit 点
               TAG_COMMIT=$(git rev-parse "$LATEST_UPSTREAM_TAG")
               git tag -f "$LATEST_UPSTREAM_TAG" "$TAG_COMMIT"
               git push origin "$LATEST_UPSTREAM_TAG" --force
@@ -61,7 +62,7 @@ jobs:
           fi
           
           if [ "$NEW_TAG_FOUND" = true ]; then
-            # 🎯 提取纯数字版本号：例如 v1.14.0-reF1nd.1 -> 1.14.0.1 ； v1.14.0-reF1nd -> 1.14.0
+            # 提取纯数字版本号：例如 v1.14.0-reF1nd.1 -> 1.14.0.1 ； v1.14.0-reF1nd -> 1.14.0
             CLEAN_VERSION=$(echo "$LAST_TAG" | sed -E 's/^v//; s/-reF1nd\././; s/-reF1nd$//')
             
             echo "TAG_UPDATED=true" >> $GITHUB_OUTPUT
