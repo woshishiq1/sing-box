@@ -10,14 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write    # 允许触发 Docker 打包工作流
-      workflows: write  # 🎯 关键修复：允许推送/更新包含 .github/workflows/ 变更的 Tag 和 Commit
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: stable
+          token: ${{ secrets.GH_PAT }}  # 🎯 关键修改：使用个人 Token 替代默认的 GITHUB_TOKEN
 
       - name: Configure Git
         run: |
@@ -52,7 +52,9 @@ jobs:
               # 获取上游该 Tag 对应的精确 Commit 点
               TAG_COMMIT=$(git rev-parse "$LATEST_UPSTREAM_TAG")
               git tag -f "$LATEST_UPSTREAM_TAG" "$TAG_COMMIT"
-              git push origin "$LATEST_UPSTREAM_TAG" --force
+              
+              # 🎯 使用带 PAT 的 URL 推送 Tag
+              git push https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git "$LATEST_UPSTREAM_TAG" --force
               
               NEW_TAG_FOUND=true
               LAST_TAG="$LATEST_UPSTREAM_TAG"
@@ -78,6 +80,7 @@ jobs:
         if: steps.tag_logic.outputs.TAG_UPDATED == 'true'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -119,7 +122,7 @@ jobs:
           git add .
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "chore: 强制同步上游代码并保留本地 .github 配置"
-            git push origin stable --force
+            git push https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git stable --force
             echo "同步完成并已推送。"
           else
             echo "无实际文件变更，无需推送。"
