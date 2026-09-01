@@ -30,13 +30,17 @@ jobs:
           set -xeuo pipefail
           
           git remote add upstream https://github.com/reF1nd/sing-box.git
-          # 💡 核心修改：添加 --force 参数允许覆盖本地冲突的标签
-          git fetch upstream --tags --force
+          # 💡 核心修改：添加 --force 参数允许覆盖本地冲突的标签，同时 fetch 目标分支
+          git fetch upstream reF1nd-stable --tags --force
 
           NEW_TAG_FOUND=false
           LAST_TAG=""
           
-          LATEST_UPSTREAM_TAG=$(git tag -l --sort=-creatordate | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd$" | head -n 1 || true)
+          # 🎯 核心修复：
+          # 1. 使用 --merged 限定只选取包含在 upstream/reF1nd-stable 历史中的 Tag（排除 oldstable）
+          # 2. 使用 --sort=-v:refname 按真实语义化版本号倒序（排除打标时间差带来的干扰）
+          STABLE_COMMIT=$(git rev-parse upstream/reF1nd-stable)
+          LATEST_UPSTREAM_TAG=$(git tag -l --sort=-v:refname --merged "$STABLE_COMMIT" | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-reF1nd$" | head -n 1 || true)
 
           if [ -n "$LATEST_UPSTREAM_TAG" ]; then
             echo "当前上游最新的稳定标签是: $LATEST_UPSTREAM_TAG"
